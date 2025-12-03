@@ -1,0 +1,425 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "de0fc67e-4c4c-43f7-834e-391266ce36b6",
+      "name": "Webhook - Customer Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        112
+      ],
+      "webhookId": "customer-support-chat"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract user message and basic info\nconst userMessage = $input.item.json.body.message || '';\nconst userId = $input.item.json.body.user_id || 'anonymous';\nconst sessionId = $input.item.json.body.session_id || Date.now().toString();\n\n// PII Masking - Regex based (no database needed)\nfunction maskPII(text) {\n  let masked = text;\n  \n  // Mask phone numbers\n  masked = masked.replace(/\\b\\d{3}[-.]?\\d{3}[-.]?\\d{4}\\b/g, '<PHONE_REDACTED>');\n  \n  // Mask emails\n  masked = masked.replace(/\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b/g, '<EMAIL_REDACTED>');\n  \n  // Mask credit cards\n  masked = masked.replace(/\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b/g, '<CARD_REDACTED>');\n  \n  // Mask SSN\n  masked = masked.replace(/\\b\\d{3}-\\d{2}-\\d{4}\\b/g, '<SSN_REDACTED>');\n  \n  return masked;\n}\n\nconst maskedMessage = maskPII(userMessage);\nconst piiDetected = maskedMessage !== userMessage;\n\nreturn {\n  json: {\n    originalMessage: userMessage,\n    maskedMessage: maskedMessage,\n    userId: userId,\n    sessionId: sessionId,\n    piiDetected: piiDetected,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "aacc16ae-38fd-4523-a267-ef838a30a7dc",
+      "name": "PII Masking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://ipapi.co/json/",
+        "options": {
+          "timeout": 3000
+        }
+      },
+      "id": "17615b2f-7cd6-4d1b-b4ea-377e91f40d52",
+      "name": "Get User Location",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.open-meteo.com/v1/forecast?latitude={{$json.latitude}}&longitude={{$json.longitude}}&current=temperature_2m,relative_humidity_2m,weather_code",
+        "options": {
+          "timeout": 3000
+        }
+      },
+      "id": "517a104f-839a-4a96-b383-ec03f801a31d",
+      "name": "Get Weather Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        208,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine if we need nearby stores based on message\nconst message = $('PII Masking').item.json.maskedMessage.toLowerCase();\nconst location = $('Get User Location').item.json;\n\nconst needsStores = message.includes('cold') || \n                    message.includes('hot') || \n                    message.includes('warm') || \n                    message.includes('hungry') ||\n                    message.includes('thirsty');\n\nlet category = 'cafe'; // default\nif (message.includes('hungry')) category = 'restaurant';\nif (message.includes('shopping') || message.includes('store')) category = 'shop';\n\nreturn {\n  json: {\n    needsStores: needsStores,\n    category: category,\n    latitude: location.latitude,\n    longitude: location.longitude,\n    radius: 500\n  }\n};"
+      },
+      "id": "7af57901-56fd-4895-ae57-9046d08169b7",
+      "name": "Analyze User Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.needsStores}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ebe67d7a-4066-448d-975f-593aaa44daeb",
+      "name": "Needs Nearby Stores?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        608,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://overpass-api.de/api/interpreter",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "data",
+              "value": "=[out:json][timeout:5];\n(\n  node[\"amenity\"=\"{{$('Analyze User Intent').item.json.category}}\"](around:{{$('Analyze User Intent').item.json.radius}},{{$('Analyze User Intent').item.json.latitude}},{{$('Analyze User Intent').item.json.longitude}});\n);\nout body 5;"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "9432d035-ca5b-47ec-8bc4-f31c9adbc6c1",
+      "name": "Find Nearby Stores",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process nearby stores from Overpass API\nconst overpassData = $input.item.json.elements || [];\nconst userLat = $('Analyze User Intent').item.json.latitude;\nconst userLon = $('Analyze User Intent').item.json.longitude;\n\nfunction calculateDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371000; // Earth radius in meters\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLon = (lon2 - lon1) * Math.PI / 180;\n  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +\n            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n            Math.sin(dLon/2) * Math.sin(dLon/2);\n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n  return Math.round(R * c);\n}\n\nconst stores = overpassData.map(element => ({\n  name: element.tags?.name || 'Unknown Store',\n  distance: calculateDistance(userLat, userLon, element.lat, element.lon),\n  lat: element.lat,\n  lon: element.lon\n})).sort((a, b) => a.distance - b.distance);\n\nreturn {\n  json: {\n    stores: stores.slice(0, 3), // Top 3 closest\n    count: stores.length\n  }\n};"
+      },
+      "id": "b7777426-803f-49e2-8b8c-6e9c22369aa3",
+      "name": "Process Store Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// If no stores needed, return empty array\nreturn {\n  json: {\n    stores: [],\n    count: 0\n  }\n};"
+      },
+      "id": "7b1ee4c7-f0d4-42d9-b1e1-645be1cd857d",
+      "name": "No Stores Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "009a584a-e4ae-47d1-9657-71b0d404ea52",
+      "name": "Merge All Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1200,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build comprehensive context for Gemini AI\nconst maskedData = $('PII Masking').item.json;\nconst location = $('Get User Location').item.json;\nconst weather = $('Get Weather Data').item.json;\nconst storesData = $input.item.json;\n\n// Build context string\nlet contextParts = [\n  User Location: ${location.city}, ${location.country_name},\n  Coordinates: ${location.latitude}, ${location.longitude},\n  Current Temperature: ${weather.current?.temperature_2m}°C,\n  Weather: ${weather.current?.weather_code === 0 ? 'Clear' : weather.current?.weather_code < 3 ? 'Partly Cloudy' : 'Cloudy'},\n  `,\n  `User Message: \"${maskedData.maskedMessage}\"\n];\n\nif (storesData.stores && storesData.stores.length > 0) {\n  contextParts.push(\\nNearby Places:);\n  storesData.stores.forEach(store => {\n    contextParts.push(`  • ${store.name} (${store.distance}m away));\n  });\n}\n\nconst systemPrompt = `You are a hyper-personalized customer support agent for a retail company.\n\nYour role:\n- Understand vague inputs using location and context\n- Provide actionable, specific solutions\n- Be concise and helpful\n- When user expresses discomfort (cold, hot, hungry), suggest the nearest relevant location\n- Generate promotional codes when appropriate (format: CATEGORY##-####)\n- If they ask about orders, inventory, or returns, acknowledge and provide relevant info\n\nContext:\n${contextParts.join('\\n')}\n\nGuidelines:\n- If user says \"I'm cold\" and there's a nearby cafe, suggest going there with a hot beverage discount\n- For \"Where's my order?\", ask for order number or check recent orders\n- For stock questions, provide inventory status (you can simulate this)\n- Be friendly, proactive, and solution-oriented\n- Keep responses under 100 words;\n\nreturn {\n  json: {\n    systemPrompt: systemPrompt,\n    userMessage: maskedData.maskedMessage,\n    fullContext: contextParts.join('\\n'),\n    location: location,\n    weather: weather,\n    stores: storesData.stores,\n    piiDetected: maskedData.piiDetected\n  }\n};"
+      },
+      "id": "518e99b9-cf0d-4052-a7b2-31d7f422b5fb",
+      "name": "Build AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{$credentials.apiKey}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"{{$json.systemPrompt}}\\n\\nUser: {{$json.userMessage}}\\n\\nProvide a helpful, actionable response:\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 500\n  }\n}",
+        "options": {}
+      },
+      "id": "86ac9db4-d37e-4207-a3f6-e331ed44b1f6",
+      "name": "Gemini AI Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1600,
+        112
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "GWXkCsOsMs9MIVaY",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and format Gemini response\nconst geminiResponse = $input.item.json;\nconst contextData = $('Build AI Prompt').item.json;\n\n// Extract AI response text\nlet aiResponse = '';\ntry {\n  aiResponse = geminiResponse.candidates[0]?.content?.parts[0]?.text || 'I apologize, but I could not generate a response.';\n} catch (error) {\n  aiResponse = 'Error processing AI response.';\n}\n\n// Build final response\nconst response = {\n  success: true,\n  response: aiResponse,\n  context: {\n    location: ${contextData.location.city}, ${contextData.location.country_name},\n    temperature: contextData.weather.current?.temperature_2m + '°C',\n    nearby_stores: contextData.stores?.map(s => ({\n      name: s.name,\n      distance: s.distance + 'm'\n    })) || []\n  },\n  privacy: {\n    pii_masked: contextData.piiDetected\n  },\n  metadata: {\n    timestamp: new Date().toISOString(),\n    model: 'gemini-pro'\n  }\n};\n\nreturn { json: response };"
+      },
+      "id": "675d3b84-7609-4808-bc99-006d233cf51f",
+      "name": "Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1808,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{JSON.stringify($json, null, 2)}}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "3626e6b7-e387-4eec-84e0-1dbd416cde97",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handler - format error response\nconst error = $input.item.json.error || 'Unknown error occurred';\n\nreturn {\n  json: {\n    success: false,\n    error: error,\n    message: 'An error occurred while processing your request. Please try again.',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "3ec84d39-6caf-4feb-9f21-eef882f9611b",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        304
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Customer Message": {
+      "main": [
+        [
+          {
+            "node": "PII Masking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PII Masking": {
+      "main": [
+        [
+          {
+            "node": "Get User Location",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User Location": {
+      "main": [
+        [
+          {
+            "node": "Get Weather Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Analyze User Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weather Data": {
+      "main": [
+        [
+          {
+            "node": "Analyze User Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze User Intent": {
+      "main": [
+        [
+          {
+            "node": "Needs Nearby Stores?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Nearby Stores?": {
+      "main": [
+        [
+          {
+            "node": "Find Nearby Stores",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Stores Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Nearby Stores": {
+      "main": [
+        [
+          {
+            "node": "Process Store Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Store Data": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Stores Needed": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Context": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini AI Response": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "1fd104362025ccd55a2a57567b9051716cf4f9adda531bcb25558e97b4b4348d"
+  }
+}
