@@ -83,6 +83,101 @@ The agent understood:
 ```
 
 ---
+# n8n Customer Support Agent — README
+
+This workspace contains n8n workflow JSON files and supporting material to run a location-aware customer support agent that can reply via webhook or Telegram and (optionally) call Google Gemini for AI responses.
+
+Files
+- `n8n_simple_test.json` — Minimal 3-node workflow (Webhook → Code → Respond) used to validate webhook mechanics locally without external APIs.
+- `n8n_final_workflow.json` — Full workflow: webhook trigger, PII masking, ipapi (location), Open-Meteo (weather), optional Overpass store lookup (or mocked places), Gemini AI call, and reply. Note: the workflow file may be deactivated for testing.
+
+Prerequisites
+- n8n installed and running locally (we used `npx n8n` on Windows). Accessible at `http://localhost:5678`.
+- PowerShell (Windows) or curl available to send test requests.
+- (Optional) ngrok or other tunneling service if you want Telegram webhook integration while running locally.
+- A Google Generative Language (Gemini) API key if you want AI responses.
+- A Telegram Bot token (if using Telegram Trigger / Send Telegram nodes).
+
+Quick start — Import & test (simple)
+1. Open n8n UI at: `http://localhost:5678`.
+2. Click `+` → Import → choose `n8n_simple_test.json` and import the workflow.
+3. Open the workflow in the editor and click `Execute Workflow` (so `/webhook-test` will return data).
+4. In PowerShell run:
+
+```powershell
+$body = '{"message":"Hello from test","user_id":"test_user","session_id":"test_123"}'
+$response = Invoke-RestMethod -Uri "http://localhost:5678/webhook-test/chat" -Method POST -ContentType "application/json" -Body $body
+$response | ConvertTo-Json -Depth 5
+```
+
+You should receive a JSON response echoing the message. If you get HTTP 200 with an empty body, ensure you clicked `Execute Workflow` in the n8n editor (test mode) before sending the POST.
+
+Importing the full workflow
+1. Import `n8n_final_workflow.json` in n8n the same way.
+2. Before activating, configure credentials:
+   - Gemini API: create credential in n8n for the Google Gemini/Palm API and attach to the `Gemini AI Response` node. The node expects a credential field named `apiKey` (or uses `$credentials.apiKey` expressions).
+   - Telegram: create Telegram credentials (Bot Token) and attach to any Telegram Trigger / Telegram nodes if you will use Telegram.
+3. Note: the file may include the Gemini node set to `models/gemini-1.5-flash` — if that model is not available for your API key/version, see "List available models" below.
+
+List available Gemini models (to find a supported model)
+Run this in PowerShell (replace `<YOUR_API_KEY>` with your key):
+
+```powershell
+Invoke-RestMethod -Uri "https://generativelanguage.googleapis.com/v1beta/models?key=<YOUR_API_KEY>" -Method GET | ConvertTo-Json -Depth 5
+```
+
+Look through the output for model names (e.g., `models/XXX`) and any supported methods such as `generateContent`. If the workflow fails with "model not found", pick a model from this list and update the `Gemini AI Response` node URL to use the correct model name.
+
+Testing the full workflow (webhook)
+- To test without Telegram, use the `/webhook-test/chat` endpoint in test mode (click "Execute Workflow"):
+
+PowerShell (status + raw body):
+
+```powershell
+$body = '{"message":"Hello from test","user_id":"test_user","session_id":"test_123"}'
+$response = Invoke-WebRequest -Uri "http://localhost:5678/webhook-test/chat" -Method POST -Headers @{ "Content-Type" = "application/json" } -Body $body -UseBasicParsing
+Write-Output "===STATUS==="
+Write-Output $response.StatusCode
+Write-Output "===CONTENT==="
+Write-Output $response.Content
+```
+
+curl example:
+
+```bash
+curl -i -X POST "http://localhost:5678/webhook-test/chat" -H "Content-Type: application/json" -d '{"message":"Hello from test","user_id":"test_user","session_id":"test_123"}'
+```
+
+Telegram integration notes
+- Telegram requires a public HTTPS webhook endpoint for real-time updates. Use ngrok to expose your local n8n:
+
+```powershell
+ngrok http 5678
+# Copy the https://... URL and set the Telegram webhook or configure n8n's Telegram credentials.
+```
+
+If you cannot expose n8n publicly, consider switching to a polling approach (getUpdates) for local testing — I can add that flow if you want.
+
+Common troubleshooting
+- Empty response from `/webhook-test`: Make sure the workflow is in "Execute Workflow" mode (test) or that a workflow is Active for production path `/webhook/chat`.
+- "JSON parameter needs to be valid JSON" in the Gemini HTTP Request node: the node's `jsonBody` must be a valid JSON object or a valid n8n expression that evaluates to an object. The included `n8n_final_workflow.json` uses an expression to build the object rather than a raw string.
+- "models/X is not found" error: run the ListModels command above and select a valid model name to update the `Gemini AI Response` node URL.
+- Credentials evaluate to `[undefined]` in the editor preview: that is normal — expressions using `$credentials` resolve only at runtime when the node executes with credentials attached. Ensure the credential is attached to the node.
+
+Security & privacy
+- Do NOT commit API keys to public repositories. If you choose to hardcode a key for quick local tests, remove it before sharing.
+- The workflow masks common PII patterns (phone, email, card, SSN) before sending messages to external services. Review and adjust masking regexes if you have additional PII patterns.
+
+Next steps / options I can help with
+- Add automatic model discovery to `n8n_final_workflow.json` (call ListModels and choose a supported model at runtime).
+- Switch the Telegram path to a polling-based flow for local development (no ngrok).
+- Add more tests (unit-like test messages) and sample payloads.
+
+If you want me to patch the workflow file (embed a model name or add the ListModels step), reply with which option you prefer and the API key handling preference (use credentials or hardcode for a quick test).
+
+---
+Generated on: 2025-12-03
+
 
 ## ✨ Key Features
 
